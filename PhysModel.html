@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+	<html>
+		<head>
+			<title>ANGULAR MOMENTUM</title>
+			
+			<script src="./js/THREEx.DomEvents.js"></script>
+			<script src="./js/THREEx.WindowResize.js"></script>
+			<script src="./js/three.min.js"></script>
+			<!--<script src="./js/ThreeCSG.js"></script>-->
+			<script src="./js/Projector.js"></script>
+			<script src="./js/dat.gui.min.js"></script>
+			<script src="./js/TrackballControls.js"></script>
+			<script src="./js/CanvasRenderer.js"></script>
+			<script src="./js/Detector.js"></script>
+			<link rel="stylesheet" href="./css/lever.css">
+		</head>
+		<body>
+			<script>
+			var scene = new THREE.Scene();
+		window.onload = function(){
+				
+				var aspect = window.innerWidth/ window.innerHeight;
+				var camera = new THREE.PerspectiveCamera(100, aspect, .1, 1000);
+				var renderer = Detector.webgl? new THREE.WebGLRenderer(): new THREE.CanvasRenderer();
+				var domEvents = new THREEx.DomEvents(camera, renderer.domElement);
+				var light = [];
+				var x_axis = new THREE.Vector3(1,0,0);
+				var y_axis = new THREE.Vector3(0,1,0);
+				var z_axis = new THREE.Vector3(0,0,1);
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+				var controls = new THREE.TrackballControls( camera,  renderer.domElement );
+				controls.enabled = false;
+				var windowResize = THREEx.WindowResize(renderer, camera);
+				camera.position.z = 5;
+				var cylinder;
+				var gui = new dat.GUI();
+				var time = new Date().getTime();
+				var cylParams = {
+					len:.52,
+					innerRadius:0.1,
+					outerRadius:.5,
+					density:1000,
+					material: new THREE.MeshPhongMaterial({
+						//color:0x2194ce,
+						color:0x1e990e,
+						emissive:0x000000,
+						shading: THREE.SmoothShading
+					}),
+					lineMaterial: new THREE.LineBasicMaterial({
+						color: 0x004A4A,
+						transparent:true,
+						opacity:0
+					}),
+					I:0.5
+				};
+				
+				var guiParams = {
+					orbitControls:false,
+					resetControls: function(){
+						controls.reset();
+						camera.position.z = 5;
+						},
+					axis:"x",
+					offset:1.0,
+					resetAnimation: function(){reset()},
+					kick: function(){kick()},
+					stop: function(){stop()},
+					omega:1.0,
+					angMom:0.5,
+					torque:250,
+					lineView:false
+				};
+				var camFolder = gui.addFolder('Camera');
+					var camControls = camFolder.add(guiParams, 'orbitControls').name("Toggle Controls");
+					camFolder.add(guiParams, 'resetControls').name("Reset Camera");
+				var shapeControls = gui.addFolder('Shape');
+					var len = shapeControls.add(cylParams, 'len', 0.1, 2).step(.1).name("Length [m]").listen();
+					var rin = shapeControls.add(cylParams, 'innerRadius',0,.5).step(.1).name("Inner Radius [m]").listen();
+					var rout= shapeControls.add(cylParams, 'outerRadius',0.1,.6).step(.1).name("Outer Radius [m]").listen();
+					var dens= shapeControls.add(cylParams, 'density', 300, 2800).name("&rho; [kg/m^3]").step(10);
+					var displayLine= shapeControls.add(guiParams,'lineView').name("Wireframe");
+				var kickFolder = gui.addFolder('Controls');
+					kickFolder.add(guiParams, 'torque', -1000, 1000).step(.1).name("&Tau; [Nm]");
+					var rotAxis = kickFolder.add(guiParams, 'axis', ['x', 'y', 'z']).name("Rotational Axis");
+					var offset = kickFolder.add(guiParams, 'offset',0.0,2.0).step(.1).name("Axis Offset [m]").listen();
+					kickFolder.add(cylParams, 'I').name("&Iota; [kg*m^2]").listen();
+					kickFolder.add(guiParams, 'kick').name("Kick");
+					kickFolder.add(guiParams, 'stop').name("Stop");
+				var readOut = gui.addFolder('Read-Out');
+					var angMom = readOut.add(guiParams, 'angMom').name("L [kg*m^2/s]").listen();
+					readOut.add(cylParams, 'I').name("&Iota; [kg*m^2]").listen();
+					readOut.add(guiParams, 'omega').name("&omega; [rad/s]").listen();
+				
+				//workaround to display values as float	
+				cylParams.innerRadius= 0.0;	
+				cylParams.len = 1.0;
+				guiParams.offset = 0.0;
+				guiParams.omega = 0.0;
+				guiParams.angMom =0.0;
+					
+				light.push(new THREE.PointLight( 0xffffff, 3, 100 ));
+				light[0].position.set( 0,0,-50 );
+				light.push(new THREE.PointLight( 0xffffff, 3, 100 ));
+				light[1].position.set(0,0,50);
+				light.push(new THREE.PointLight( 0xffffff, 3, 100 ));
+				light[2].position.set(25,25,25);
+				scene.add(light[0], light[2], light[1] );
+							
+				controls.rotateSpeed = 1.0;
+				controls.zoomSpeed = 1.2;
+				controls.panSpeed = 0.8;
+				controls.noZoom = false;
+				controls.noPan = false;
+				controls.staticMoving = false;
+				controls.dynamicDampingFactor = 0.3;
+				
+				var axisHelper = new THREE.AxisHelper(200);
+				scene.add(axisHelper);
+				
+				//cylinder = cylinderGeom(cylParams);
+				var cylGeom = cylinderGeom(cylParams);
+				cylinder = new THREE.Object3D().add(new THREE.Mesh(cylGeom,cylParams.material));
+				cylinder.add(new THREE.Line(cylGeom, cylParams.lineMaterial));
+				scene.add(cylinder);
+				makeSky();
+				initializeListeners();
+				updatePhysics();
+				render();
+				
+				
+				/*******FUNCTIONS**************/
+				
+				/*
+				create a double-walled cylinder with inner radius ri,
+				outer radius ro, and length l
+				*/
+				/*
+				function cylinderGeom( cylP) {
+					if(cylP.innerRadius>=cylP.outerRadius){
+						cylP.outerRadius = cylP.innerRadius*1.01;
+					}
+					var cyl;
+					var cube_geometry = new THREE.CylinderGeometry( cylP.outerRadius, cylP.outerRadius, cylP.len,50,5 );
+					if(cylP.innerRadius>0){
+						var cube_bsp = new ThreeBSP( cube_geometry );
+		
+						var sphere_geometry = new THREE.CylinderGeometry( cylP.innerRadius, cylP.innerRadius, cylP.len, 50,5 );
+						var sphere_bsp = new ThreeBSP( sphere_geometry );
+		
+						var subtract_bsp = cube_bsp.subtract( sphere_bsp );
+						cyl = subtract_bsp.toGeometry();
+						cyl.computeVertexNormals();
+					}
+					else{
+						cyl = cube_geometry;
+					}
+					return cyl;	
+				}
+				*/
+				function cylinderGeom(cylP){
+					if(cylP.innerRadius>=cylP.outerRadius){
+						cylP.outerRadius = cylP.innerRadius*1.01;
+					}
+					if(cylP.innerRadius>0){
+						var extrudeSettings = {
+							amount : cylParams.len,
+							steps : 1,
+							bevelEnabled: false,
+							curveSegments: 15
+						};
+
+						var arcShape = new THREE.Shape();
+						arcShape.absarc(0, 0, cylP.outerRadius, 0, Math.PI * 2, 0, false);
+	
+						var holePath = new THREE.Path();
+						holePath.absarc(0, 0, cylP.innerRadius, 0, Math.PI * 2, true);
+						arcShape.holes.push(holePath);
+
+						cyl = new THREE.ExtrudeGeometry(arcShape, extrudeSettings).translate(0,0,-cylParams.len/2);
+						cyl.rotateX(Math.PI/2);
+					}
+					else{
+						cyl = new THREE.CylinderGeometry( cylP.outerRadius, cylP.outerRadius, cylP.len,25,5 );
+					}
+					return cyl;
+				}
+				function kick(){
+					var alpha = guiParams.torque/cylParams.I;
+					guiParams.omega += alpha;
+					guiParams.angMom = cylParams.I*guiParams.omega;
+				}
+				function stop(){
+					guiParams.angMom = 0;
+					updatePhysics();
+				}
+				
+				function makeSky(){
+					var sky = new THREE.Object3D();
+					var skyGeom = new THREE.BoxGeometry(100,100,100,1,1,1);
+					var skyMaterial = new THREE.MeshBasicMaterial({
+						color:0x87CEFF,
+						side:THREE.DoubleSide,
+						shading:THREE.FlatShading
+					});
+					sky.add(new THREE.Mesh(skyGeom, skyMaterial));
+					scene.add(sky)
+				}
+				function reset(){}
+				
+				function initializeListeners(){
+					camControls.onChange(function(value){
+						controls.enabled = value;
+					});
+					len.onChange(function(){
+						replaceCylinder();
+						
+					});
+					rin.onChange(function(){
+						replaceCylinder();
+						
+					});
+					rout.onChange(function(){
+						replaceCylinder();
+						
+					});
+					dens.onChange(function(){
+						replaceCylinder();
+						
+					});
+					offset.onChange(function(value){
+						offsetF(value);
+						
+					});
+					rotAxis.onChange(function(){
+						if(cylinder.translated){
+						cylinder.children[0].geometry.translate(-cylinder.translated.x,-cylinder.translated.y,-cylinder.translated.z);
+						cylinder.children[1].geometry.translate(-cylinder.translated.x,-cylinder.translated.y,-cylinder.translated.z);
+						}
+						cylinder.translated = false;
+						cylinder.rotation.set(0,0,0);
+						guiParams.offset = 0;
+						stop();
+					});
+					displayLine.onChange(function(value){
+						if(value){
+							cylParams.lineMaterial.opacity=.56;
+						}
+						else{
+							cylParams.lineMaterial.opacity=0;
+						}
+						replaceCylinder();
+					});
+				}
+				function offsetF(val){
+					//console.log(cylinder.children[0].geometry);
+					if(cylinder.translated){
+						cylinder.children[0].geometry.translate(-cylinder.translated.x,-cylinder.translated.y,-cylinder.translated.z);
+						cylinder.children[1].geometry.translate(-cylinder.translated.x,-cylinder.translated.y,-cylinder.translated.z);
+					}
+					switch(guiParams.axis){
+						case 'x':
+							cylinder.children[0].geometry.translate(0,val,0);	
+							cylinder.children[1].geometry.translate(0,val,0);
+							cylinder.translated= {x:0,y:val,z:0};
+							break;
+						case 'y':
+							//axis =  new THREE.Vector3(0,guiParams.offset+1,0);;
+							cylinder.children[0].geometry.translate(0,0,val);
+							cylinder.children[1].geometry.translate(0,0,val);
+							cylinder.translated={x:0,y:0,z:val};
+							break;
+						case 'z':
+							//axis =  new THREE.Vector3(0,0,guiParams.offset+1);;
+							cylinder.children[0].geometry.translate(val,0,0);
+							cylinder.children[1].geometry.translate(val,0,0);
+							cylinder.translated={x:val,y:0,z:0};
+							break;
+					}
+					updatePhysics();
+				}
+				
+				function replaceCylinder(){
+					var oldCyl = {rot: cylinder.rotation, pos: cylinder.position };
+					cylGeom = cylinderGeom(cylParams);
+					cylinder.children[0].geometry.dispose();
+					cylinder.children[0].geometry = cylGeom;
+					cylinder.children[1].geometry.dispose();
+					cylinder.children[1].geometry = cylGeom;
+					if(cylinder.translated){
+						cylinder.children[0].geometry.translate(cylinder.translated.x,cylinder.translated.y,cylinder.translated.z);
+						cylinder.children[1].geometry.translate(cylinder.translated.x,cylinder.translated.y,cylinder.translated.z);
+					}
+					updatePhysics();
+				}
+				function updateRotation(c){
+					var d = new Date().getTime();
+					var axis=0;
+					//console.log(d);
+					var step = (d-time)/1000;
+					
+					//console.log(eval(guiParams.axis.concat('_axis')));
+					c.rotateOnAxis(eval(guiParams.axis.concat('_axis')), guiParams.omega*step);
+					time = d;
+				}
+				function updatePhysics(c){
+					var m = cylParams.density *Math.PI*cylParams.len
+							*(cylParams.outerRadius*cylParams.outerRadius
+							-cylParams.innerRadius*cylParams.innerRadius);
+					switch(guiParams.axis){
+					case 'x':
+						cylParams.I = (m/12)*(cylParams.len*cylParams.len 
+									+ 3*(cylParams.outerRadius*cylParams.outerRadius
+										+cylParams.innerRadius*cylParams.innerRadius));
+						break;
+					case 'y':
+						cylParams.I = m*(cylParams.outerRadius*cylParams.outerRadius 
+										+ cylParams.innerRadius*cylParams.innerRadius)/2;
+						break;
+					case 'z':
+						cylParams.I = (m/12)*(cylParams.len*cylParams.len 
+									+ 3*(cylParams.outerRadius*cylParams.outerRadius
+										+cylParams.innerRadius*cylParams.innerRadius));;
+						break;
+					}
+					cylParams.I += m*guiParams.offset*guiParams.offset;
+					guiParams.omega = guiParams.angMom/cylParams.I;
+					
+				}
+				
+				function render(){
+					requestAnimationFrame(render);
+					controls.update();
+					//updatePhysics(cylinder);
+					updateRotation(cylinder);
+					renderer.render( scene, camera);
+				};
+				
+			}	
+			</script>
+		</body>
+	</html>
